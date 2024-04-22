@@ -1,0 +1,215 @@
+# Civkit Year 1 - Technical Learnings
+
+## Civkit Project
+
+Civkit introduces a new peer-to-peer electronic market system, relying on the dissemination
+and replication of market orders on an unbounded number of relays. The market orders can be
+fetched by anyone to find trading counterparties and then engage in trust-minimized escrowed
+payments to exchange goods and services. Escrows are moderated by a set of oracles adjudicating
+funds if disputes arise among market counterparties.
+
+### Civkit Node
+
+A 1st implementation of the Civkit market system was started as a server-client architecture in Rust.
+
+```
+
+        --------------------            --------------------
+        |                  |            |                  |
+        |  civkit-notaryd  |            |  civkit-marketd  |             -------------------
+        |__________________|            |__________________|             |                 |
+                         \               /                               |  civkit-sample  |
+                          \             /                                |_________________|
+                           civkit_service                                           |
+              civkitd           |                                                   |
+                                |                                                   |
+     ---------------------------|---------------------------------------------------|-----------
+     |                     -------------------   -----------------------            |          |
+     |  -----------------  |                 |   |                     |            |          |
+     |  |               |  | service manager |   | credentials gateway |   ------------------- |
+     |  | onion gateway |  |_________________|   |_____________________|   |                 | |
+     |  |_______________|                                                  |  client handler | |
+     |                                                                     |_________________| |
+     |  ----------------    -------------------    ----------------------                      |
+     |  |              |    |                 |    |                    |                      |
+     |  | peer handler |    | kind processor  |    |  bitcoind handler  |                      |
+     |  |______________|    |_________________|    |____________________|                      |
+     |_____________________________|_________________________|_________________________________|
+           |                       |                         |
+           |                       |                         |
+           |                  ------------            --------------
+           |                  |          |            |            |
+           |                  |  SQLite  |            |  bitcoind  |
+           |                  |__________|            |____________|
+           |
+    ----------------
+    |              |
+    |  civkit-cli  |
+    |______________|
+
+```
+
+At its heart, `civkitd` leverages a credential framework to issue signed credentials by the server
+in exchange of client payments. For now, only on-chain payments are accepted as a method to obtain
+signed credentials. The credentials can be then redeemed to broadcast market nostr events to all
+connected nostr clients, while ensuring the market server is paid for its service (and get 1:1 monetary
+coverage of its computational costs as storage, CPU processing and bandwidth).
+
+The `civkit` allows the plugging of experimental microservices, such as Mainstay notarization (`civkit-notaryd`)
+to get market order events orderly timestamped in the blockchain or delegated market board setting their
+own policy (`civkit-marketd`). Each microservice market board can be operated by a different operator
+while benefiting from being hosted by a single `civkitd` in a Wordpress fashion.
+
+Core processing functionalities are guaranteed by a `civkitd` relay while each `civkit-markted` have
+full-ownership and control of its market board pubkey (for reputation) and policy (types of orders processed).
+One `civkit-marketd` could plug in many `civkitd` nodes.
+
+### Civkit JS App
+
+A 2nd implementation of the Civkit market system was started as a Node JS app and a CLN plug-in, where
+the escrow system is leveraging the hold invoice feature. All the trading flow happens in a chatroom hosted
+by a relay and with new kinds for trading phases. This JS client targets more mobile environment deployment.
+
+### Lightning Softwares
+
+Civkit aims to introduce Lightning infrastructure in Rust leveraging "custom scripts" APIs for advanced
+off-chain escrows. This project has been put on hold.
+
+## Learnings
+
+### Escrow and Oracles
+
+Civkit aims to have "simple" and "advanced escrow" available to secure trading flow. For the latter, leveraging
+payment point as a feature to dynamically program the curve point for logical native scripting and enable support
+along a route of payment channels without knowledge of the lock details. After more considerations, it turns out
+payment points support in Lightning is still at the phase of a proof-of-concept, rather well-supported on the network.
+
+A more simple idea was experimented to minimize trust in the Escrow oracles, without modification of lightning
+softwares, "sharded payments" [0]. Basically, a verifiable encryption scheme is leveraged to cipher a locked payment
+secret such as a preimage and it only gets deciphered by trading oracles if the goods and services have been fully
+delivered to the seller by submitting a proof-of-execution. This sharded payment is still on the white-board stage,
+waiting to research more security properties of "sharded payments".
+
+### Lightning is Very Hard
+
+On paper, the Lightning protocol is a revolution in scalable off-chain instant payments, while aiming to bind to
+the trust-minimized security philosophy of Bitcoin, the base layer. In practice, Lightning channels are suffering
+from heavy transaction-relay jamming vectors, mempools spikes and propagation of pre-signed transaction is messy,
+liquidity management of spokes is still more frontier edge engineering, keys are still hot in most of deployment,
+routing and chain state for mobile clients does not scale among other issues.
+
+Zooming out, yet the basic economic engineering promises of payment channels and other UTXO-sharing schemes are
+still interesting. Let's consider real-world data on second lowest-quartiles incomes (~8000 satoshi / day  or 2
+920 000 satoshi y or ~$6 day / ~$2190 y) in a range of developing countries [1]:
+- Philippines (72.0 % of population - ~80 M)
+- Indonesia (76.0% of population - ~200 M)
+- China (65% of population - ~840M)
+- India (75% of population - ~1 Mds)
+- Kenya (62% of population - ~30M)
+- Nigeria (50% of population - ~115M)
+- South Africa (50% of population - ~30M)
+- Brazil (40% of population - ~80M)
+- Argentina (35% of population - ~10M)
+
+Back-of-the-envelope mathematics, looking only at a few geographically and culturally selected countries 2.185 millions 
+of potential off-chain payments users with a budget of 2.920 M of sats of budget. Assuming 1% of the available income
+can be dedicated to purchase of basic financial services, the budget for Lightning channel (1-funding / 1-closing) is
+around 29200 sats.
+
+Assuming BOLT's 3 164 bytes's funding transaction (1-P2WPKH spend) and 223-bytes cooperative closing transaction (2-of-2
+P2WSH spend / 2 outputs), confirmation of 1 funding transaction and 1 closing transaction for the 2.185 M of users would
+take 845 GiB of block space (applied some rough witness discount) or assuming current block size and average block interval,
+4 years at the marginal feerate of 10 sat / vbytes.
+
+Independently, Lightning off-chain trust-minimized payments are guaranteed only for channel outputs above the dust (what is
+called "uneconomical output"). While most wide-spread dust limits are configured for an input-output pair spent at 3 sat /
+vbytes average mempool feerates are circling around more than 10 sats / bytes [2]. Assuming ~250 bytes (2-input / 1-output)
+for a second-stage lightning transaction and each payment is above 540 sats, it can be an additional cost of 2500 sats for
+each off-chain payment in the worst-case scenario.
+
+Given the defined budget of 29200 sats for our 2.185 millions of potential off-chain payments users, only 9 payments could
+be made simultaneously. Any downstream payment issue locking an in-flight payment. Additionally, 540 sats for the lowest
+amount of trust-minimized payment (or ~ $0.40) might be far above the average goods or services daily bought by the population
+segment in the second-lowest-quartile incomes (~ $6 / day).
+
+Under today's Bitcoin consensus rule, and abstraction made of all security and safety issues affecting the protocol and its
+deployment, the raw economic engineering units of Lightning can present a scaling issue as a payment settlement system for the
+trading workflow of hundreds of millions or more Civkit users. Lightning as a settlement solution can be still interesting for
+market traffic instant compensation among market boards nodes.
+
+
+### "Life finds a way"... Ecash ?
+
+E-cash has been known as a micro-payment technique since the 80's and it could serve as an e-commerce electronic payment.
+Basically e-cash works around a mint issuing privacy-preserving tokens backed by the "good faith" of the mint operators.
+As there is no public anti-double-spend oracle (i.e a blockchain), there is no scalability issue as long as the mint can
+dedicate more computational resources to server users. (and solve the "bootstrapping" issue in a world where mint access
+credentials can be forged).
+
+There have not been research if e-cash payment methods could suit Civkit trading market flow.
+
+### Nostr is Young
+
+The civkit node (`civkitd`) implements a NIP-01 relay, with support for few more foundational NIPs. One of the immediate
+concerns arising about most current Nostr event processing flow is API exposure to denial-of-service. While NIP-57 allows
+Lightning payments of events, it is yet to be seen the robustness of this scheme in a world where Nostr relay lightning
+liquidity access might be channel jammed.
+
+One NIP to port BOLT12's offer as an embedded Nostr event, to allow re-usability of the Lightning onion routing network [4].
+However, it has not been established yet if it's better to prioritize an over-the-counter market (on-invitation market chatroom
+feeds) or exchange style of deployment with publicity of the event orders.
+
+Finally, there is no integration of MuSig2 or FROST in the npub standard, where one market board public keys could be shared
+among multiple devices for professional nodes deployment, and high-value market trading flow. NIP-01 standard relies on the
+Schnorr signature scheme and its linearity property that can allow it to sign aggregated common messages.
+
+### The fresh "Web-of-Stakes" paradigm
+
+Civkit proposed to establish a "web-of-stakes" paradigm to sort and order high-volume information to prevent spam from
+paralyzing operations. While UTXO's are making obvious stakes proofs to be reused by any participant in the Civkit architecture,
+making them reasonably private by default at least for a v0.0.1 is harder than expected.
+
+In the meantime, there have been the emergence of the experimental "web-of-stakes" paradigm in the Nostr-land, where zapped sats
+among Nostr public keys are displayed on global feed [5]. 
+
+Spam management study has been done by more traditional infrastructure services, such as multi-phase spam detection flow decomposed
+in client automation flagging, forged access monitoring and purely noisy activity application. Efficient spam mitigations might be
+crucial to enable aggregators / market indexes services to serve bandwidth-constraints mobile clients.
+
+### The decade old "Infrastructure-as-a-Market" paradigm
+
+Civkit aimed to adheres to an "infrastructure-as-a-market" paradigm, where all the services are competitively provided by peer-to-peer
+functionaries, similar to mining nodes on the base layer or routings hops in lightning.
+
+As a recall the wished security and fault-tolerance properties of IaaM functionaries:
+- no formal barrier to entry (e.g not like IANA managing root zone in DNS)
+- no single point of failure (i.e avoid 51% > market share IaaM functionary)
+- no privileged parties coordinating the network (i.e avoid root DNS servers)
+
+Civkit functionaries could announce  custom policy as conditions for the provision of
+their services, while execution correctness of such services should be rewarded by micro-payments
+or reputation ranking.
+
+A v0.0.1 proof-of-concept ECC-based credential framework was implemented to redeem functionaries
+services [6]. Digging more in academic literature, we realized that dynamic pricing of Internet
+resources (our "IaaM" paradigm) between a client and server have been studied decades ago [7]. From
+this literature, proof-of-works or micro-payments were already established as effective methods to
+handle DoS and differentiated service request fulfillments.
+
+
+[0] https://gist.github.com/ariard/9520c8ddedf4730f74a388cbbef00068
+
+[1] https://www.pewresearch.org/global/interactives/global-population-by-income/
+
+[2] https://bitcoinops.org/en/topics/uneconomical-outputs/
+
+[3] https://bitcoinops.org/en/topics/uneconomical-outputs/
+
+[4] https://github.com/nostr-protocol/nips/pull/638/files
+
+[5] https://zaplife.lol/
+
+[6] https://github.com/civkit/staking-credentials
+
+[7] https://apps.dtic.mil/sti/pdfs/ADA406438.pdf
+
